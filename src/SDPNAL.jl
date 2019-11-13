@@ -41,6 +41,17 @@ function sdpnalplus(
 
     #C::Vector{<:Union{Vector{Float64}, SparseVector{Float64}}}, b::Vector{Float64})
 
+    @show blk
+    @show At
+    @show C
+    @show b
+    @show L
+    @show U
+    @show Bt
+    @show size.(Bt)
+    @show l
+    @show u
+
     options = Dict{String, Any}(string(key) => value for (key, value) in kws)
     @assert all(i -> size(At[i], 2) == length(b), 1:length(At))
     @assert length(At) == size(blk, 1)
