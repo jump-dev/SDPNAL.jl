@@ -18,7 +18,7 @@ model = Model(with_optimizer(SDPNAL.Optimizer, printlevel=0))
 
 Note that contrary to implementation of other solver-independent interfaces,
 using SDPNAL from JuMP/MOI allows to fully exploit the particular structures of the SDPNAL interface
-and does not create superfuous slack variables and equality constraints discussed in [the SDPNAL guide](https://arxiv.org/pdf/1710.10604.pdf):
+and does not create superfluous slack variables and equality constraints discussed in [the SDPNAL guide](https://arxiv.org/pdf/1710.10604.pdf):
 
 > A new interface is necessary to facilitate the modeling of an SDP problem for Sdpnal+ because of latter’s flexibility to directly accept inequality constraints of the form “l ≤ B(X) ≤ u”,
 > and bound constraints of the form “L ≤ X ≤ U”.
