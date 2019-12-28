@@ -5,7 +5,7 @@ using MATLAB
 
 export sdpnalplus
 
-# See Solver/sqlparameters.m
+# See solver_main_default/sdpnalplus.m
 const ALLOWED_OPTIONS = [
     "tol",
     "sigma",

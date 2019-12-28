@@ -3,7 +3,8 @@ using LinearAlgebra # For rmul!
 using MathOptInterface
 const MOI = MathOptInterface
 const MOIU = MOI.Utilities
-const AFFEQ = MOI.ConstraintIndex{MOI.ScalarAffineFunction{Cdouble}, MOI.EqualTo{Cdouble}}
+const AFFEQ = MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64}, MOI.EqualTo{Float64}}
+const BoundsSet = Union{MOI.GreaterThan{Float64}, MOI.LessThan{Float64}, MOI.Interval{Float64}}
 
 @enum VariableType NNEG PSD
 
@@ -15,8 +16,11 @@ end
 
 mutable struct Optimizer <: MOI.AbstractOptimizer
     b::Vector{Float64}
+    l::Vector{Float64}
+    u::Vector{Float64}
 
     variable_info::Vector{VariableInfo}
+    single_variable_mask::Vector{UInt8}
 
     # PSDCone variables
     psdc_dims::Vector{Int}
@@ -25,6 +29,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     psdc_Avar::Vector{Vector{Int}}
     psdc_Acon::Vector{Vector{Int}}
     psdc_Aval::Vector{Vector{Float64}}
+    psdc_Bvar::Vector{Vector{Int}}
+    psdc_Bcon::Vector{Vector{Int}}
+    psdc_Bval::Vector{Vector{Float64}}
+    psdc_L::Vector{Matrix{Float64}}
+    psdc_U::Vector{Matrix{Float64}}
 
     # NonNEGatives variables
     num_nneg::Int
@@ -34,6 +43,11 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     nneg_Avar::Vector{Int}
     nneg_Acon::Vector{Int}
     nneg_Aval::Vector{Float64}
+    nneg_Bvar::Vector{Int}
+    nneg_Bcon::Vector{Int}
+    nneg_Bval::Vector{Float64}
+    nneg_L::Vector{Float64}
+    nneg_U::Vector{Float64}
 
     objective_sense::MOI.OptimizationSense
     objective_constant::Float64
@@ -42,9 +56,13 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     dual_objective_value::Float64
     nneg_X::Vector{Float64}
     psdc_X::Vector{Vector{Float64}}
+    s::Vector{Float64}
     y::Vector{Float64}
-    nneg_Z::Vector{Float64}
-    psdc_Z::Vector{Vector{Float64}}
+    y2::Vector{Float64}
+    nneg_Z1::Vector{Float64}
+    nneg_Z2::Vector{Float64}
+    psdc_Z1::Vector{Vector{Float64}}
+    psdc_Z2::Vector{Vector{Float64}}
     info::Dict{String, Any}
     runhist::Dict{String, Any}
     status::Union{Nothing, Int}
@@ -54,14 +72,15 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
     options::Dict{Symbol, Any}
     function Optimizer(; kwargs...)
         optimizer = new(
-            Float64[], VariableInfo[],
-            Int[], Vector{Int}[], Vector{Float64}[], Vector{Int}[], Vector{Int}[], Vector{Float64}[],
-            0, Int[], Int[], Float64[], Int[], Int[], Float64[],
+            Float64[], Float64[], Float64[], VariableInfo[], UInt8[],
+            Int[], Vector{Int}[], Vector{Float64}[], Vector{Int}[], Vector{Int}[], Vector{Float64}[], Vector{Int}[], Vector{Int}[], Vector{Float64}[], Matrix{Float64}[], Matrix{Float64}[],
+            0, Int[], Int[], Float64[], Int[], Int[], Float64[], Int[], Int[], Float64[], Float64[], Float64[],
             MOI.FEASIBILITY_SENSE, 0.0,
             NaN, NaN,
             Float64[], Vector{Float64}[], # X
-            Float64[], # y
-            Float64[], Vector{Float64}[], # Z
+            Float64[], # s
+            Float64[], Float64[], # y, y2 ≈ v
+            Float64[], Float64[], Vector{Float64}[], Vector{Float64}[], # Z
             Dict{String, Any}(), Dict{String, Any}(),
             nothing, NaN,
             false, Dict{Symbol, Any}())
@@ -98,7 +117,7 @@ function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
 end
 
 function MOI.is_empty(optimizer::Optimizer)
-    return isempty(optimizer.b) &&
+    return isempty(optimizer.b) && isempty(optimizer.l) && isempty(optimizer.u) &&
         isempty(optimizer.variable_info) &&
         iszero(optimizer.psdc_dims) &&
         iszero(optimizer.num_nneg) &&
@@ -108,8 +127,11 @@ end
 
 function MOI.empty!(optimizer::Optimizer)
     empty!(optimizer.b)
+    empty!(optimizer.l)
+    empty!(optimizer.u)
 
     empty!(optimizer.variable_info)
+    empty!(optimizer.single_variable_mask)
 
     empty!(optimizer.psdc_dims)
     empty!(optimizer.psdc_Cvar)
@@ -117,6 +139,11 @@ function MOI.empty!(optimizer::Optimizer)
     empty!(optimizer.psdc_Avar)
     empty!(optimizer.psdc_Acon)
     empty!(optimizer.psdc_Aval)
+    empty!(optimizer.psdc_Bvar)
+    empty!(optimizer.psdc_Bcon)
+    empty!(optimizer.psdc_Bval)
+    empty!(optimizer.psdc_L)
+    empty!(optimizer.psdc_U)
 
     optimizer.num_nneg = 0
     empty!(optimizer.nneg_info)
@@ -125,6 +152,11 @@ function MOI.empty!(optimizer::Optimizer)
     empty!(optimizer.nneg_Avar)
     empty!(optimizer.nneg_Acon)
     empty!(optimizer.nneg_Aval)
+    empty!(optimizer.nneg_Bvar)
+    empty!(optimizer.nneg_Bcon)
+    empty!(optimizer.nneg_Bval)
+    empty!(optimizer.nneg_L)
+    empty!(optimizer.nneg_U)
 
     optimizer.objective_sense = MOI.FEASIBILITY_SENSE
     optimizer.objective_constant = 0.0
@@ -133,9 +165,13 @@ function MOI.empty!(optimizer::Optimizer)
     optimizer.dual_objective_value = NaN
     empty!(optimizer.nneg_X)
     empty!(optimizer.psdc_X)
+    empty!(optimizer.s)
     empty!(optimizer.y)
-    empty!(optimizer.nneg_Z)
-    empty!(optimizer.psdc_Z)
+    empty!(optimizer.y2)
+    empty!(optimizer.nneg_Z1)
+    empty!(optimizer.nneg_Z2)
+    empty!(optimizer.psdc_Z1)
+    empty!(optimizer.psdc_Z2)
     empty!(optimizer.info)
     empty!(optimizer.runhist)
     optimizer.status = nothing
@@ -160,8 +196,8 @@ function MOI.supports_constraint(
     return true
 end
 function MOI.supports_constraint(
-    ::Optimizer, ::Type{MOI.ScalarAffineFunction{Cdouble}},
-    ::Type{MOI.EqualTo{Cdouble}})
+    ::Optimizer, ::Type{MOI.ScalarAffineFunction{Float64}},
+    ::Type{<:Union{MOI.EqualTo{Float64}, BoundsSet}})
     return true
 end
 
@@ -174,10 +210,12 @@ MOIU.supports_default_copy_to(::Optimizer, copy_names::Bool) = !copy_names
 function _add_nonneg_variable(optimizer::Optimizer)
     optimizer.num_nneg += 1
     push!(optimizer.variable_info, VariableInfo(NNEG, 1, optimizer.num_nneg))
+    push!(optimizer.single_variable_mask, 0x0)
     return MOI.VariableIndex(length(optimizer.variable_info))
 end
 function _add_psdc_variable(optimizer::Optimizer, index_in_cone)
     push!(optimizer.variable_info, VariableInfo(PSD, length(optimizer.psdc_dims), index_in_cone))
+    push!(optimizer.single_variable_mask, 0x0)
     return MOI.VariableIndex(length(optimizer.variable_info))
 end
 function _add_constrained_variables(optimizer::Optimizer, set::MOI.Nonnegatives)
@@ -185,21 +223,64 @@ function _add_constrained_variables(optimizer::Optimizer, set::MOI.Nonnegatives)
     for i in 2:MOI.dimension(set)
         push!(optimizer.nneg_info, i)
     end
+    for i in 1:MOI.dimension(set)
+        push!(optimizer.nneg_L, -Inf)
+        push!(optimizer.nneg_U, Inf)
+    end
     return [_add_nonneg_variable(optimizer) for i in 1:MOI.dimension(set)]
 end
 function _add_constrained_variables(optimizer::Optimizer, set::MOI.PositiveSemidefiniteConeTriangle)
-    push!(optimizer.psdc_dims, MOI.side_dimension(set))
+    d = MOI.side_dimension(set)
+    push!(optimizer.psdc_dims, d)
     push!(optimizer.psdc_Cvar, Int[])
     push!(optimizer.psdc_Cval, Float64[])
     push!(optimizer.psdc_Avar, Int[])
     push!(optimizer.psdc_Acon, Int[])
     push!(optimizer.psdc_Aval, Float64[])
+    push!(optimizer.psdc_Bvar, Int[])
+    push!(optimizer.psdc_Bcon, Int[])
+    push!(optimizer.psdc_Bval, Float64[])
+    push!(optimizer.psdc_L, fill(-Inf,  d, d))
+    push!(optimizer.psdc_U, fill(Inf,  d, d))
     return [_add_psdc_variable(optimizer, i) for i in 1:MOI.dimension(set)]
 end
 function MOI.add_constrained_variables(optimizer::Optimizer, set::SupportedSets)
     vis = _add_constrained_variables(optimizer, set)
     ci = MOI.ConstraintIndex{MOI.VectorOfVariables, typeof(set)}(first(vis).value)
     return vis, ci
+end
+
+# Variable bounds
+function MOI.supports_constraint(
+    optimizer::Optimizer, ::Type{MOI.SingleVariable}, ::Type{<:BoundsSet})
+    return true
+end
+function MOI.add_constraint(
+    optimizer::Optimizer, f::MOI.SingleVariable, set::BoundsSet)
+    vi = f.variable
+    flag = MOIU.single_variable_flag(typeof(set))
+    mask = optimizer.single_variable_mask[vi.value]
+    MOIU.throw_if_lower_bound_set(vi, typeof(set), mask, Float64)
+    MOIU.throw_if_upper_bound_set(vi, typeof(set), mask, Float64)
+    info = optimizer.variable_info[vi.value]
+    if !iszero(flag & MOIU.LOWER_BOUND_MASK)
+        if info.variable_type == NNEG
+            L = optimizer.nneg_L
+        else
+            L = optimizer.psdc_L[info.cone_index]
+        end
+        L[info.index_in_cone] = MOIU.extract_lower_bound(set)
+    end
+    if !iszero(flag & MOIU.UPPER_BOUND_MASK)
+        if info.variable_type == NNEG
+            U = optimizer.nneg_U
+        else
+            U = optimizer.psdc_U[info.cone_index]
+        end
+        U[info.index_in_cone] = MOIU.extract_upper_bound(set)
+    end
+    optimizer.single_variable_mask[vi.value] = mask | flag
+    return MOI.ConstraintIndex{MOI.SingleVariable, typeof(set)}(vi.value)
 end
 
 # Objective
@@ -272,6 +353,34 @@ function MOI.add_constraint(optimizer::Optimizer, func::MOI.ScalarAffineFunction
     end
     return AFFEQ(con)
 end
+function MOI.add_constraint(optimizer::Optimizer, func::MOI.ScalarAffineFunction{Float64}, set::BoundsSet)
+    if !iszero(MOI.constant(func))
+        # We use the fact that the initial function constant was zero to
+        # implement getters for `MOI.ConstraintPrimal`.
+        throw(MOI.ScalarFunctionConstantNotZero{
+             Float64, typeof(func), typeof(set)}(MOI.constant(func)))
+    end
+    flag = MOIU.single_variable_flag(typeof(set))
+    push!(optimizer.l, iszero(flag & MOIU.LOWER_BOUND_MASK) ? -Inf : MOIU.extract_lower_bound(set))
+    push!(optimizer.u, iszero(flag & MOIU.UPPER_BOUND_MASK) ? Inf : MOIU.extract_upper_bound(set))
+    con = length(optimizer.l)
+    for term in func.terms
+        info = optimizer.variable_info[term.variable_index.value]
+        if info.variable_type == NNEG
+            push!(optimizer.nneg_Bvar, info.index_in_cone)
+            push!(optimizer.nneg_Bcon, con)
+            push!(optimizer.nneg_Bval, term.coefficient)
+        else
+            @assert info.variable_type == PSD
+            push!(optimizer.psdc_Bvar[info.cone_index], info.index_in_cone)
+            push!(optimizer.psdc_Bcon[info.cone_index], con)
+            coef = is_diagonal_index(info.index_in_cone) ? term.coefficient : term.coefficient / √2
+            push!(optimizer.psdc_Bval[info.cone_index], coef)
+        end
+    end
+    return MOI.ConstraintIndex{typeof(func), typeof(set)}(con)
+end
+
 
 # TODO could do something more efficient here
 #      `SparseMatrixCSC` is returned in SumOfSquares.jl test `sos_horn`
@@ -290,6 +399,20 @@ function symvec(Q::Matrix)
     @assert k == length(q)
     return q
 end
+function symvec(Q::Vector)
+    if length(Q) > 1
+        error("Expected square matrix from SDPNAL but got a vector of length $(length(Q))")
+    end
+    return Q
+end
+function _vec(x::SparseMatrixCSC)
+    if size(x, 2) > 1
+        error("Expected a vector from SDPNAL but got a sparse matrix of size $(size(x))")
+    end
+    return Vector(x[:, 1])
+end
+_vec(x::Float64) = [x]
+_vec(x::Vector) = x
 
 function MOI.optimize!(optimizer::Optimizer)
     options = optimizer.options
@@ -301,35 +424,55 @@ function MOI.optimize!(optimizer::Optimizer)
     blk1 = Any[]
     blk2 = Any[]
     m = length(optimizer.b)
+    p = length(optimizer.l)
     At = SparseArrays.SparseMatrixCSC{Float64,Int}[]
+    Bt = SparseArrays.SparseMatrixCSC{Float64,Int}[]
     # FIXME I get a strange failure with sparse vectors, need to investigate
     C = Union{Matrix{Float64}, Vector{Float64}}[]
+    L = Vector{Union{Matrix{Float64}, Vector{Float64}}}(undef, 0)
+    U = Vector{Union{Matrix{Float64}, Vector{Float64}}}(undef, 0)
     if !isempty(optimizer.psdc_dims)
         for (i, dim) in enumerate(optimizer.psdc_dims)
             vec_dim = MOI.dimension(MOI.PositiveSemidefiniteConeTriangle(dim))
             push!(At, sparse(optimizer.psdc_Avar[i], optimizer.psdc_Acon[i], optimizer.psdc_Aval[i], vec_dim, m))
+            push!(Bt, sparse(optimizer.psdc_Bvar[i], optimizer.psdc_Bcon[i], optimizer.psdc_Bval[i], vec_dim, p))
             c = Vector(sparsevec(optimizer.psdc_Cvar[i], optimizer.psdc_Cval[i], vec_dim))
             Ci = zeros(dim, dim)
+            Li_vec = optimizer.psdc_L[i]
+            Li = zeros(dim, dim)
+            Ui_vec = optimizer.psdc_U[i]
+            Ui = zeros(dim, dim)
             k = 0
             for col in 1:dim
                 for row in 1:(col - 1)
                     k += 1
                     Ci[row, col] = c[k] / 2
                     Ci[col, row] = c[k] / 2
+                    Li[row, col] = Li_vec[k]
+                    Li[col, row] = Li_vec[k]
+                    Ui[row, col] = Ui_vec[k]
+                    Ui[col, row] = Ui_vec[k]
                 end
                 k += 1
                 Ci[col, col] = c[k]
+                Li[col, col] = Li_vec[k]
+                Ui[col, col] = Ui_vec[k]
             end
             push!(C, Ci)
+            push!(L, Li)
+            push!(U, Ui)
             push!(blk1, "s")
             push!(blk2, Float64(dim))
         end
     end
     if !iszero(optimizer.num_nneg)
         push!(At, sparse(optimizer.nneg_Avar, optimizer.nneg_Acon, optimizer.nneg_Aval, optimizer.num_nneg, m))
+        push!(Bt, sparse(optimizer.nneg_Bvar, optimizer.nneg_Bcon, optimizer.nneg_Bval, optimizer.num_nneg, p))
         push!(C, Vector(sparsevec(optimizer.nneg_Cvar, optimizer.nneg_Cval, optimizer.num_nneg)))
         push!(blk1, "l")
         push!(blk2, Float64(optimizer.num_nneg))
+        push!(L, optimizer.nneg_L)
+        push!(U, optimizer.nneg_U)
     end
     blk = [blk1 blk2]
 
@@ -340,22 +483,27 @@ function MOI.optimize!(optimizer::Optimizer)
     end
 
     obj, X, s, y, Z1, Z2, y2, v, optimizer.info, optimizer.runhist = sdpnalplus(
-        blk, At, C, optimizer.b; options...)
+        blk, At, C, optimizer.b, L, U, Bt, optimizer.l, optimizer.u; options...)
 
     optimizer.primal_objective_value, optimizer.dual_objective_value = obj
     k = 0
     optimizer.psdc_X = symvec.(X[k .+ eachindex(optimizer.psdc_dims)])
-    optimizer.psdc_Z = symvec.(Z1[k .+ eachindex(optimizer.psdc_dims)])
+    optimizer.psdc_Z1 = symvec.(Z1[k .+ eachindex(optimizer.psdc_dims)])
+    optimizer.psdc_Z2 = symvec.(Z2[k .+ eachindex(optimizer.psdc_dims)])
     k += length(optimizer.psdc_dims)
     if iszero(optimizer.num_nneg)
         empty!(optimizer.nneg_X)
-        empty!(optimizer.nneg_Z)
+        empty!(optimizer.nneg_Z1)
+        empty!(optimizer.nneg_Z2)
     else
         k += 1
         optimizer.nneg_X = X[k]
-        optimizer.nneg_Z = Z1[k]
+        optimizer.nneg_Z1 = Z1[k]
+        optimizer.nneg_Z2 = _vec(Z2[k])
     end
+    optimizer.s = s
     optimizer.y = y
+    optimizer.y2 = _vec(y2) # Should we used `v` instead ? They should be approximately equal
     optimizer.status = optimizer.info["termcode"]
     optimizer.solve_time = optimizer.info["totaltime"]
 end
@@ -439,6 +587,13 @@ function MOI.get(optimizer::Optimizer, attr::MOI.VariablePrimal, vi::MOI.Variabl
         return optimizer.psdc_X[info.cone_index][info.index_in_cone]
     end
 end
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal,
+                 ci::MOI.ConstraintIndex{MOI.SingleVariable, <:BoundsSet})
+    MOI.check_result_index_bounds(optimizer, attr)
+    return MOI.get(optimizer, MOI.VariablePrimal(attr.N),
+                   MOI.VariableIndex(ci.value))
+end
+
 
 function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal,
                  ci::MOI.ConstraintIndex{MOI.VectorOfVariables, S}) where S<:SupportedSets
@@ -456,20 +611,43 @@ function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal, ci::AFFEQ)
     MOI.check_result_index_bounds(optimizer, attr)
     return optimizer.b[ci.value]
 end
-
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal,
+                 ci::MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64},
+                                         <:BoundsSet})
+    MOI.check_result_index_bounds(optimizer, attr)
+    return optimizer.s[ci.value]
+end
 function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual,
-                 ci::MOI.ConstraintIndex{MOI.VectorOfVariables, S}) where S<:SupportedSets
+                 ci::MOI.ConstraintIndex{MOI.VectorOfVariables, <:SupportedSets})
     MOI.check_result_index_bounds(optimizer, attr)
     info = optimizer.variable_info[ci.value]
     if info.variable_type == NNEG
         dim = optimizer.nneg_info[info.index_in_cone]
-        return optimizer.nneg_Z[(info.index_in_cone - 1) .+ (1:dim)]
+        return optimizer.nneg_Z1[(info.index_in_cone - 1) .+ (1:dim)]
     else
         @assert info.variable_type == PSD
-        return optimizer.psdc_Z[info.cone_index]
+        return optimizer.psdc_Z1[info.cone_index]
     end
+end
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual,
+                 ci::MOI.ConstraintIndex{MOI.SingleVariable, <:BoundsSet})
+    MOI.check_result_index_bounds(optimizer, attr)
+    info = optimizer.variable_info[ci.value]
+    if info.variable_type == NNEG
+        Z2 = optimizer.nneg_Z2
+    else
+        @assert info.variable_type == PSD
+        Z2 = optimizer.psdc_Z2[info.cone_index]
+    end
+    return Z2[info.index_in_cone]
 end
 function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual, ci::AFFEQ)
     MOI.check_result_index_bounds(optimizer, attr)
     return optimizer.y[ci.value]
+end
+function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual,
+                 ci::MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64},
+                                         <:BoundsSet})
+    MOI.check_result_index_bounds(optimizer, attr)
+    return optimizer.y2[ci.value]
 end
