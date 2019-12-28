@@ -485,13 +485,6 @@ function MOI.optimize!(optimizer::Optimizer)
     obj, X, s, y, Z1, Z2, y2, v, optimizer.info, optimizer.runhist = sdpnalplus(
         blk, At, C, optimizer.b, L, U, Bt, optimizer.l, optimizer.u; options...)
 
-    if !isempty(y2) || !isempty(v)
-        @show typeof(y2)
-        @show y2
-        @show typeof(v)
-        @show v
-    end
-
     optimizer.primal_objective_value, optimizer.dual_objective_value = obj
     k = 0
     optimizer.psdc_X = symvec.(X[k .+ eachindex(optimizer.psdc_dims)])
