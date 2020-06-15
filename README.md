@@ -32,7 +32,7 @@ and does not create superfluous slack variables and equality constraints discuss
 
 You can install `SDPNAL.jl` through the Julia package manager:
 ```julia
-] add https://github.com/JuliaOpt/SDPNAL.jl.git
+] add SDPNAL
 ```
 but you first need to make sure that you satisfy the requirements of the
 [MATLAB.jl](https://github.com/JuliaInterop/MATLAB.jl) Julia package and that
