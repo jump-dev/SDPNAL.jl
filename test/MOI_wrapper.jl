@@ -9,7 +9,7 @@ const MOIB = MOI.Bridges
 import SDPNAL
 # With the default tolerance (`tol=1e-6`), the termination status is often
 # `NUMERICAL_ERROR` when there are inequality constraints.
-# See https://github.com/JuliaOpt/SDPNAL.jl/pull/1
+# See https://github.com/jump-dev/SDPNAL.jl/pull/1
 const OPTIMIZER = SDPNAL.Optimizer(tol=1e-4)
 MOI.set(OPTIMIZER, MOI.Silent(), true)
 const CONFIG = MOIT.TestConfig(atol=1e-3, rtol=1e-3)
