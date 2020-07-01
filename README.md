@@ -38,3 +38,29 @@ but you first need to make sure that you satisfy the requirements of the
 [MATLAB.jl](https://github.com/JuliaInterop/MATLAB.jl) Julia package and that
 the SDPNAL software is installed in your
 [MATLAB™](http://www.mathworks.com/products/matlab/) installation.
+
+### Troubleshooting
+
+There is a `startup.m` file at the root of the SDPNAL folder.
+This adds all subfolder recursively when MATLAB starts.
+However, the `interface` subfolder constains a .git subfolder which contains a very large tree of subfolders.
+Because of this MATLAB crashes if SDPNAL is in its path because the `startup.m` requests MATLAB to try to parse all the files in the `.git` folder.
+To resolve this, delete the `startup.m` file and `.git` folder and add the subfolders manually your `toolbox/local/pathdef.m` file as follows:
+```
+function p = pathdef
+
+% (...)
+
+p = [...
+%%% BEGIN ENTRIES %%%
+'/path/to/SDPNALv1.0:', ...
+'/path/to/SDPNALv1.0/interface:', ...
+'/path/to/SDPNALv1.0/mexfun:', ...
+'/path/to/SDPNALv1.0/solver:', ...
+'/path/to/SDPNALv1.0/solver_main_default:', ...
+'/path/to/SDPNALv1.0/util:', ...
+% (...)
+```
+
+If you have [SDPT3](https://github.com/jump-dev/SDPT3.jl) in addition to SDPNAL in the MATLAB's path (i.e. the `toolbox/local/pathdef.m` file) then you might have issues.
+As both solvers define a `validate` function, this might make SDPNAL call SDPT3's `validate` function instead of SDPT3's `validate` function.
