@@ -1,7 +1,7 @@
 name = "SDPNAL"
 uuid = "f7a9608b-7678-5329-8a05-97541ebc462c"
 repo = "https://github.com/jump-dev/SDPNAL.jl.git"
-version = "0.0.1"
+version = "0.0.2"
 
 [deps]
 LinearAlgebra = "37e2e46d-f89d-539d-b4ee-838fcccc9c8e"
