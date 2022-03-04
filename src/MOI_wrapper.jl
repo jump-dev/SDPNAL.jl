@@ -84,23 +84,32 @@ mutable struct Optimizer <: MOI.AbstractOptimizer
             Dict{String, Any}(), Dict{String, Any}(),
             nothing, NaN,
             false, Dict{Symbol, Any}())
+        if !isempty(kwargs)
+            @warn("""Passing optimizer attributes as keyword arguments to
+            SDPNAL.Optimizer is deprecated. Use
+                MOI.set(model, MOI.RawOptimizerAttribute("key"), value)
+            or
+                JuMP.set_optimizer_attribute(model, "key", value)
+            instead.
+            """)
+        end
         for (key, value) in kwargs
-            MOI.set(optimizer, MOI.RawParameter(string(key)), value)
+            MOI.set(optimizer, MOI.RawOptimizerAttribute(string(key)), value)
         end
         return optimizer
     end
 end
 
-function MOI.supports(optimizer::Optimizer, param::MOI.RawParameter)
+function MOI.supports(optimizer::Optimizer, param::MOI.RawOptimizerAttribute)
     return param.name in ALLOWED_OPTIONS
 end
-function MOI.set(optimizer::Optimizer, param::MOI.RawParameter, value)
+function MOI.set(optimizer::Optimizer, param::MOI.RawOptimizerAttribute, value)
     if !MOI.supports(optimizer, param)
         throw(MOI.UnsupportedAttribute(param))
     end
     optimizer.options[Symbol(param.name)] = value
 end
-function MOI.get(optimizer::Optimizer, param::MOI.RawParameter)
+function MOI.get(optimizer::Optimizer, param::MOI.RawOptimizerAttribute)
     # TODO: This gives a poor error message if the name of the parameter is invalid.
     return optimizer.options[Symbol(param.name)]
 end
@@ -112,7 +121,7 @@ end
 MOI.get(optimizer::Optimizer, ::MOI.Silent) = optimizer.silent
 
 MOI.get(::Optimizer, ::MOI.SolverName) = "SDPNAL"
-function MOI.get(optimizer::Optimizer, ::MOI.SolveTime)
+function MOI.get(optimizer::Optimizer, ::MOI.SolveTimeSec)
     return optimizer.solve_time
 end
 
@@ -195,10 +204,10 @@ function MOI.supports_constraint(
     return true
 end
 
-function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike; kws...)
-    return MOIU.automatic_copy_to(dest, src; kws...)
+function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike)
+    return MOIU.default_copy_to(dest, src)
 end
-MOIU.supports_default_copy_to(::Optimizer, copy_names::Bool) = !copy_names
+MOI.supports_incremental_interface(::Optimizer) = true
 
 # Variables
 function _add_nonneg_variable(optimizer::Optimizer)
@@ -246,35 +255,34 @@ end
 
 # Variable bounds
 function MOI.supports_constraint(
-    optimizer::Optimizer, ::Type{MOI.SingleVariable}, ::Type{<:BoundsSet})
+    optimizer::Optimizer, ::Type{MOI.VariableIndex}, ::Type{<:BoundsSet})
     return true
 end
 function MOI.add_constraint(
-    optimizer::Optimizer, f::MOI.SingleVariable, set::BoundsSet)
-    vi = f.variable
-    flag = MOIU.single_variable_flag(typeof(set))
+    optimizer::Optimizer, vi::MOI.VariableIndex, set::BoundsSet)
+    flag = MOIU._single_variable_flag(typeof(set))
     mask = optimizer.single_variable_mask[vi.value]
     MOIU.throw_if_lower_bound_set(vi, typeof(set), mask, Float64)
     MOIU.throw_if_upper_bound_set(vi, typeof(set), mask, Float64)
     info = optimizer.variable_info[vi.value]
-    if !iszero(flag & MOIU.LOWER_BOUND_MASK)
+    if !iszero(flag & MOIU._LOWER_BOUND_MASK)
         if info.variable_type == NNEG
             L = optimizer.nneg_L
         else
             L = optimizer.psdc_L[info.cone_index]
         end
-        L[info.index_in_cone] = MOIU.extract_lower_bound(set)
+        L[info.index_in_cone] = MOIU._lower_bound(set)
     end
-    if !iszero(flag & MOIU.UPPER_BOUND_MASK)
+    if !iszero(flag & MOIU._UPPER_BOUND_MASK)
         if info.variable_type == NNEG
             U = optimizer.nneg_U
         else
             U = optimizer.psdc_U[info.cone_index]
         end
-        U[info.index_in_cone] = MOIU.extract_upper_bound(set)
+        U[info.index_in_cone] = MOIU._upper_bound(set)
     end
     optimizer.single_variable_mask[vi.value] = mask | flag
-    return MOI.ConstraintIndex{MOI.SingleVariable, typeof(set)}(vi.value)
+    return MOI.ConstraintIndex{MOI.VariableIndex, typeof(set)}(vi.value)
 end
 
 # Objective
@@ -303,7 +311,7 @@ function MOI.set(optimizer::Optimizer, ::MOI.ObjectiveFunction{MOI.ScalarAffineF
     end
     sign = sense_to_sign(optimizer.objective_sense)
     for term in func.terms
-        info = optimizer.variable_info[term.variable_index.value]
+        info = optimizer.variable_info[term.variable.value]
         if info.variable_type == NNEG
             push!(optimizer.nneg_Cvar, info.index_in_cone)
             push!(optimizer.nneg_Cval, sign * term.coefficient)
@@ -332,7 +340,7 @@ function MOI.add_constraint(optimizer::Optimizer, func::MOI.ScalarAffineFunction
     push!(optimizer.b, MOI.constant(set))
     con = length(optimizer.b)
     for term in func.terms
-        info = optimizer.variable_info[term.variable_index.value]
+        info = optimizer.variable_info[term.variable.value]
         if info.variable_type == NNEG
             push!(optimizer.nneg_Avar, info.index_in_cone)
             push!(optimizer.nneg_Acon, con)
@@ -354,12 +362,12 @@ function MOI.add_constraint(optimizer::Optimizer, func::MOI.ScalarAffineFunction
         throw(MOI.ScalarFunctionConstantNotZero{
              Float64, typeof(func), typeof(set)}(MOI.constant(func)))
     end
-    flag = MOIU.single_variable_flag(typeof(set))
-    push!(optimizer.l, iszero(flag & MOIU.LOWER_BOUND_MASK) ? -Inf : MOIU.extract_lower_bound(set))
-    push!(optimizer.u, iszero(flag & MOIU.UPPER_BOUND_MASK) ? Inf : MOIU.extract_upper_bound(set))
+    flag = MOIU._single_variable_flag(typeof(set))
+    push!(optimizer.l, iszero(flag & MOIU._LOWER_BOUND_MASK) ? -Inf : MOIU._lower_bound(set))
+    push!(optimizer.u, iszero(flag & MOIU._UPPER_BOUND_MASK) ? Inf : MOIU._upper_bound(set))
     con = length(optimizer.l)
     for term in func.terms
-        info = optimizer.variable_info[term.variable_index.value]
+        info = optimizer.variable_info[term.variable.value]
         if info.variable_type == NNEG
             push!(optimizer.nneg_Bvar, info.index_in_cone)
             push!(optimizer.nneg_Bcon, con)
@@ -546,20 +554,26 @@ const PRIMAL_STATUS = [
     MOI.NO_SOLUTION
 ]
 function MOI.get(optimizer::Optimizer, attr::MOI.PrimalStatus)
-    if attr.N > MOI.get(optimizer, MOI.ResultCount())
+    if isnothing(optimizer.status) || attr.result_index > MOI.get(optimizer, MOI.ResultCount())
         return MOI.NO_SOLUTION
     end
     return PRIMAL_STATUS[4 + optimizer.status]
 end
 
 function MOI.get(optimizer::Optimizer, attr::MOI.DualStatus)
-    if attr.N > MOI.get(optimizer, MOI.ResultCount())
+    if isnothing(optimizer.status) || attr.result_index > MOI.get(optimizer, MOI.ResultCount())
         return MOI.NO_SOLUTION
     end
     return PRIMAL_STATUS[4 + optimizer.status]
 end
 
-MOI.get(::Optimizer, ::MOI.ResultCount) = 1
+function MOI.get(optimizer::Optimizer, ::MOI.ResultCount)
+    if isnothing(optimizer)
+        return 0
+    else
+        return 1
+    end
+end
 function MOI.get(optimizer::Optimizer, attr::MOI.ObjectiveValue)
     MOI.check_result_index_bounds(optimizer, attr)
     sign = sense_to_sign(optimizer.objective_sense)
@@ -582,9 +596,9 @@ function MOI.get(optimizer::Optimizer, attr::MOI.VariablePrimal, vi::MOI.Variabl
     end
 end
 function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintPrimal,
-                 ci::MOI.ConstraintIndex{MOI.SingleVariable, <:BoundsSet})
+                 ci::MOI.ConstraintIndex{MOI.VariableIndex, <:BoundsSet})
     MOI.check_result_index_bounds(optimizer, attr)
-    return MOI.get(optimizer, MOI.VariablePrimal(attr.N),
+    return MOI.get(optimizer, MOI.VariablePrimal(attr.result_index),
                    MOI.VariableIndex(ci.value))
 end
 
@@ -624,7 +638,7 @@ function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual,
     end
 end
 function MOI.get(optimizer::Optimizer, attr::MOI.ConstraintDual,
-                 ci::MOI.ConstraintIndex{MOI.SingleVariable, <:BoundsSet})
+                 ci::MOI.ConstraintIndex{MOI.VariableIndex, <:BoundsSet})
     MOI.check_result_index_bounds(optimizer, attr)
     info = optimizer.variable_info[ci.value]
     if info.variable_type == NNEG
