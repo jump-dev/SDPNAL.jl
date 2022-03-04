@@ -2,9 +2,18 @@ using LinearAlgebra # For rmul!
 
 using MathOptInterface
 const MOI = MathOptInterface
-const MOIU = MOI.Utilities
 const AFFEQ = MOI.ConstraintIndex{MOI.ScalarAffineFunction{Float64}, MOI.EqualTo{Float64}}
 const BoundsSet = Union{MOI.GreaterThan{Float64}, MOI.LessThan{Float64}, MOI.Interval{Float64}}
+
+# Copied from `MathOptInterface/src/Utilities/variables_container.jl`
+_single_variable_flag(::Type{<:MOI.GreaterThan}) = 0x0002
+_single_variable_flag(::Type{<:MOI.LessThan}) = 0x0004
+_single_variable_flag(::Type{<:MOI.Interval}) = 0x0008
+# 0xcb = 0x0080 | 0x0040 | 0x0008 | 0x0002 | 0x0001
+const _LOWER_BOUND_MASK = 0x00cb
+# 0xcd = 0x0080 | 0x0040 | 0x0008 | 0x0004 | 0x0001
+const _UPPER_BOUND_MASK = 0x00cd
+
 
 @enum VariableType NNEG PSD
 
@@ -205,7 +214,7 @@ function MOI.supports_constraint(
 end
 
 function MOI.copy_to(dest::Optimizer, src::MOI.ModelLike)
-    return MOIU.default_copy_to(dest, src)
+    return MOI.Utilities.default_copy_to(dest, src)
 end
 MOI.supports_incremental_interface(::Optimizer) = true
 
@@ -260,26 +269,26 @@ function MOI.supports_constraint(
 end
 function MOI.add_constraint(
     optimizer::Optimizer, vi::MOI.VariableIndex, set::BoundsSet)
-    flag = MOIU._single_variable_flag(typeof(set))
+    flag = _single_variable_flag(typeof(set))
     mask = optimizer.single_variable_mask[vi.value]
-    MOIU.throw_if_lower_bound_set(vi, typeof(set), mask, Float64)
-    MOIU.throw_if_upper_bound_set(vi, typeof(set), mask, Float64)
+    MOI.Utilities.throw_if_lower_bound_set(vi, typeof(set), mask, Float64)
+    MOI.Utilities.throw_if_upper_bound_set(vi, typeof(set), mask, Float64)
     info = optimizer.variable_info[vi.value]
-    if !iszero(flag & MOIU._LOWER_BOUND_MASK)
+    if !iszero(flag & _LOWER_BOUND_MASK)
         if info.variable_type == NNEG
             L = optimizer.nneg_L
         else
             L = optimizer.psdc_L[info.cone_index]
         end
-        L[info.index_in_cone] = MOIU._lower_bound(set)
+        L[info.index_in_cone] = set.lower
     end
-    if !iszero(flag & MOIU._UPPER_BOUND_MASK)
+    if !iszero(flag & _UPPER_BOUND_MASK)
         if info.variable_type == NNEG
             U = optimizer.nneg_U
         else
             U = optimizer.psdc_U[info.cone_index]
         end
-        U[info.index_in_cone] = MOIU._upper_bound(set)
+        U[info.index_in_cone] = set.upper
     end
     optimizer.single_variable_mask[vi.value] = mask | flag
     return MOI.ConstraintIndex{MOI.VariableIndex, typeof(set)}(vi.value)
@@ -362,9 +371,9 @@ function MOI.add_constraint(optimizer::Optimizer, func::MOI.ScalarAffineFunction
         throw(MOI.ScalarFunctionConstantNotZero{
              Float64, typeof(func), typeof(set)}(MOI.constant(func)))
     end
-    flag = MOIU._single_variable_flag(typeof(set))
-    push!(optimizer.l, iszero(flag & MOIU._LOWER_BOUND_MASK) ? -Inf : MOIU._lower_bound(set))
-    push!(optimizer.u, iszero(flag & MOIU._UPPER_BOUND_MASK) ? Inf : MOIU._upper_bound(set))
+    flag = _single_variable_flag(typeof(set))
+    push!(optimizer.l, iszero(flag & _LOWER_BOUND_MASK) ? -Inf : set.lower)
+    push!(optimizer.u, iszero(flag & _UPPER_BOUND_MASK) ? Inf : set.upper)
     con = length(optimizer.l)
     for term in func.terms
         info = optimizer.variable_info[term.variable.value]
