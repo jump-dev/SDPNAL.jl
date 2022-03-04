@@ -9,11 +9,12 @@ To use it with JuMP, simply do
 ```julia
 using JuMP
 using SDPNAL
-model = Model(with_optimizer(SDPNAL.Optimizer))
+model = Model(SDPNAL.Optimizer)
 ```
-To suppress output, do
+To suppress output, do `set_silent(model)` or
 ```julia
-model = Model(with_optimizer(SDPNAL.Optimizer, printlevel=0))
+model = Model(optimizer_with_attribute(SDPNAL.Optimizer, "printlevel" => 0))
+set_silent(model)
 ```
 
 Note that contrary to implementation of other solver-independent interfaces,
