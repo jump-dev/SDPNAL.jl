@@ -39,13 +39,13 @@ SDPNAL interface and does not create superfluous slack variables and equality
 constraints as discussed in [the SDPNAL guide](https://arxiv.org/pdf/1710.10604.pdf):
 
 > A new interface is necessary to facilitate the modeling of an SDP problem for
-> Sdpnal+ because of latter’s flexibility to directly accept inequality
+> SDPNAL+ because of latter’s flexibility to directly accept inequality
 > constraints of the form “l ≤ B(X) ≤ u”, and bound constraints of the form
 > “L ≤ X ≤ U”. The flexibility can significantly simplify the generation of the
-> data in the Sdpnal+ format as compared to what need to be done in CVX or
+> data in the SDPNAL+ format as compared to what need to be done in CVX or
 > YALMIP to reformulate them as equality constraints through introducing extra
 > variables. In addition, the final number of equality constraints present in
-> the data input to Sdpnal+ can also be substantially fewer than those present
+> the data input to SDPNAL+ can also be substantially fewer than those present
 > in CVX or YALMIP. It is important to note here that the number of equality
 > constraints present in the generated problem data can greatly affect the
 > computational efficiency of the solvers, especially for interior-point based
