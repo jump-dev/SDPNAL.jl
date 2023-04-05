@@ -16,7 +16,7 @@ of SDPNALplus.
 
 ## License
 
-`SDPNAL.jl` is licensed under the [MIT License](https://github.com/jump-dev/v.jl/blob/master/LICENSE.md).
+`SDPNAL.jl` is licensed under the [MIT License](https://github.com/jump-dev/SDPNAL.jl/blob/master/LICENSE.md).
 
 The underlying solver, [SDPNALplus](https://blog.nus.edu.sg/mattohkc/softwares/sdpnalplus/)
 is licensed under the [Creative Commons Attribution-ShareAlike 4.0 International Public License](https://creativecommons.org/licenses/by-sa/4.0/).
